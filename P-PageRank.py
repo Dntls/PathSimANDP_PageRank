@@ -34,17 +34,21 @@ class DBLPnetwork_P_PageRank:
         self.relation_dict = defaultdict(list)
         self.author_paper_dict = defaultdict(list)
         self.paper_venue_dict = defaultdict(list)
+        self.paper_author_dict = defaultdict(list)
+        self.venue_paper_dict = defaultdict(list)
         self.paper_term_dict = defaultdict(list)
         self.APV_dict = defaultdict(list)
         self.APT_dict = defaultdict(list)
+        self.VPA_dict = defaultdict(list)
         self.AV_dict= {}
         self.AT_dict = {}
+        self.VA_dict = {}
         self.AA_dict_APVPA = defaultdict(list)
         self.AA_dict_APTPA = defaultdict(list)
-        
+        self.AA_dict_VPAPV = defaultdict(list)
         self._file_to_dict(author, venue, paper, term, relation)
         self._build_paths()
-        self._build_APV_APT_path()
+        self._build_APV_APT_VPA_path()
 
     def _file_to_dict(self,author, venue, paper, term, relation):
         """ Parse txt files to dictionaries by calling each txt file's read function.
@@ -145,12 +149,13 @@ class DBLPnetwork_P_PageRank:
                 elif self.venue_dict.has_key(i):
                     venue = self.venue_dict.get(i)
                     self.paper_venue_dict[paper].append(venue)
+                    self.venue_paper_dict[venue].append(paper)
                 # Build paper term path in the paper_term_dict
                 elif self.term_dict.has_key(i):
                     term = self.term_dict.get(i)
                     self.paper_term_dict[paper].append(term)
         
-    def _build_APV_APT_path(self):
+    def _build_APV_APT_VPA_path(self):
         """Search through the author_paper_dict. If the paper can be found in paper_venue_dict or paper_term_dict
            add the venue or term name into APV_dict or APT_dict.
            @input: author_paper_dict, paper_venue_dict, and paper_term_dict
@@ -186,7 +191,21 @@ class DBLPnetwork_P_PageRank:
                             self.AT_dict[(author, term)]  = val
                         else:
                             self.AT_dict[(author, term)] = 1
-    
+        for venue, papers in self.venue_paper_dict.iteritems():
+            for paper in papers:
+                # Build VPA path (venue_paper_author)
+                if self.paper_author_dict.has_key(paper):
+                    authors = self.paper_author_dict.get(paper)
+                    for author in authors:
+                        # VPA path
+                        self.VPA_dict[venue].append((paper, author))
+                        # VA path
+                        if (self.VA_dict.has_key((venue, author))):
+                            val = self.VA_dict.get((venue, author)) + 1
+                            self.VA_dict[(venue, author)] = val
+                        else:
+                            self.VA_dict[(venue, author)] = 1
+
     def _find_venues_for_an_author(self, an_author):
         """Find a list of venues for one author
            @input: AV_dict with (author, venue) as key, number of paths from author to venue as value
@@ -212,7 +231,20 @@ class DBLPnetwork_P_PageRank:
             if (self.AT_dict.has_key((an_author, termname))):
                 ret_dict[termname] = self.AT_dict.get((an_author, termname))
         return ret_dict
-         
+
+    def _find_authors_for_an_venue(self, an_venue):
+        """Find a list of venues for one author
+           @input: AV_dict with (author, venue) as key, number of paths from author to venue as value
+                   venue_dict with venue id as key, venue name as value
+                   author name
+           @output: ret_dict with venue name as key and number of paths from author to venue as value
+        """
+        ret_dict = {}
+        for authorid, authorname in self.author_dict.iteritems():
+            if (self.VA_dict.has_key((an_venue, authorname))):
+                ret_dict[authorname] = self.VA_dict.get((an_venue, authorname))
+        return ret_dict
+
     def _build_AA_dict_APVPA(self):
         """Find paths from an_author to all other authors using APVPA path by calling _find_venues_for_an_author
            @input: AV_dict with (author, venue) as key, number of paths from author to venue as value
@@ -247,7 +279,22 @@ class DBLPnetwork_P_PageRank:
                     # if normalized_num_paths > 0:
                     #     self.AA_dict_APTPA[an_author].append((author, normalized_num_paths))
                     self.AA_dict_APTPA[an_author].append((author, num_paths))
-                      
+
+    def _build_AA_dict_VPAPV(self):
+        """Find paths from an_author to all other authors using APVPA path by calling _find_venues_for_an_author
+           @input: AV_dict with (author, venue) as key, number of paths from author to venue as value
+                   author_dict
+           @output: ret_dict with venue name as key and number of paths from author to venue as value
+        """
+        for venueid, an_venue in self.venue_dict.iteritems():
+            authordict = self._find_authors_for_an_venue(an_venue)
+            authorlist = authordict.keys()
+            for (venue, author), num_to_venue in self.VA_dict.iteritems():
+                if author in authorlist:
+                    num_from_an_venue = authordict.get(author)
+                    num_paths = num_from_an_venue * num_to_venue
+                    self.AA_dict_VPAPV[an_venue].append((venue, num_paths))
+
     def _set_initial_distribution(self, an_author):
         """Set initial distribution for each node by going through each node in
            author_dict, paper_dict, venue_dict, and term_dict. 
@@ -265,7 +312,24 @@ class DBLPnetwork_P_PageRank:
             self.distribution_dict[author] = self.initial_distribution
             if author == an_author:
                 self.distribution_dict[author] += self.teleport_constant
-        
+    def _set_initial_venue_distribution(self, an_venue):
+        """Set initial distribution for each node by going through each node in
+           author_dict, paper_dict, venue_dict, and term_dict.
+           For PageRank, the inital distribution should be (1-teleport_constant)/total_nodes.
+           For Personalized PageRank, the initial distribution is the same for all other nodes
+           besides the interested node(s), an author in this project.
+           This author's initial distribution would be
+           (1-teleport_constant)/number of total nodes + teleport_constant
+           @input: teleport_constant, total_nodes,
+                   author_dict, paper_dict, venue_dict, and term_dict
+           @output: distribution_dict with initial_distribution
+        """
+        self.initial_distribution = (1-self.teleport_constant)/self.total_nodes
+        for venueid, venue in self.venue_dict.iteritems():
+            self.distribution_dict[venue] = self.initial_distribution
+            if venue == an_venue:
+                self.distribution_dict[venue] += self.teleport_constant
+
     def _one_step_random_walk(self, an_author, lastiteration, path):
         """Conduct random walk along each edge in the network to obtain a
            distribution surface that each distribution means the possibility
@@ -296,7 +360,38 @@ class DBLPnetwork_P_PageRank:
             # update the source to 0. Otherwise, keep the original value
             if not (lastiteration and count == self.total_nodes):
                 self.distribution_dict[source] = 0
-                   
+
+    def _one_step_random_venue_walk(self, an_venue, lastiteration, path):
+        """Conduct random walk along each edge in the network to obtain a
+           distribution surface that each distribution means the possibility
+           to randomly walk to that node.
+           Note: As the provided case is a connected graph with undirected edges,
+           there won't be any sink node needs to distribute a teleport_constant
+           probability to randomly jump to all other nodes.
+           Only the node of interest (an_venue) will add a teleport_constant probability
+           to be randomly jumped to for each source node that we go through.
+           @input: AA_dict_VPAPV
+        """
+        count = 0
+        for source, sinks in self.AA_dict_VPAPV.iteritems():
+            num_out = 0
+            count += 1
+            for (sink, num_paths) in sinks:
+                num_out += num_paths
+            distribution = self.distribution_dict[source] / num_out
+            distribution_to_neighbor = (1 - self.teleport_constant) * distribution
+            distribution_to_interest = self.teleport_constant * distribution
+            # Random walk to neighbors
+            for (sink, num_paths) in sinks:
+                self.distribution_dict[sink] += distribution_to_neighbor
+            # Random jump to node of interest
+            self.distribution_dict[an_venue] += distribution_to_interest
+
+            # if not in the last iteration and if not the last one in AA_dict
+            # update the source to 0. Otherwise, keep the original value
+            if not (lastiteration and count == self.total_nodes):
+                self.distribution_dict[source] = 0
+
     def find_top_10_similar_authors(self, an_author, path):
         """Find top 10 similar authors using PathSim algorithm with APVPA path by building AA_dict using APTPA.
            @input: an author name
@@ -316,7 +411,23 @@ class DBLPnetwork_P_PageRank:
         for author,distribution in sorted_distribution_dict:
             ret_list.append(author)
         return ret_list
-        
+
+    def find_top_10_similar_venues(self, an_venue, path):
+        """Find top 10 similar authors using PathSim algorithm with APVPA path by building AA_dict using APTPA.
+           @input: an author name
+           @output: a list of 10 authors
+        """
+
+        self._build_AA_dict_VPAPV()
+        self._set_initial_venue_distribution(an_venue)
+        for i in range(0, self.random_walk_iterations - 1):
+            self._one_step_random_venue_walk(an_venue, 0, path)
+        self._one_step_random_venue_walk(an_venue, 1, path)
+        sorted_distribution_dict = sorted(self.distribution_dict.items(), key=operator.itemgetter(1), reverse=True)[:11]
+        ret_list = []
+        for author, distribution in sorted_distribution_dict:
+            ret_list.append(author)
+        return ret_list
         
     def print_dict(self, dict):
         """ Print normal dict with value as a string for debug purpose.
@@ -360,26 +471,30 @@ def main():
     print "============  Results using P-PageRank  ====================="
     print "=============================================================\n"
     
-    print "========Top 10 using APVPA for Christos Faloutsos============"
-    CFlist_APVPA = dblp.find_top_10_similar_authors("Christos Faloutsos", "APVPA")
-    for author in CFlist_APVPA:
-        print author
+    # print "========Top 10 using APVPA for Christos Faloutsos============"
+    # CFlist_APVPA = dblp.find_top_10_similar_authors("Christos Faloutsos", "APVPA")
+    # for author in CFlist_APVPA:
+    #     print author
+    #
+    # print "============Top 10 using APVPA for AnHai Doan================="
+    # ADlist_APVPA = dblp.find_top_10_similar_authors("AnHai Doan", "APVPA")
+    # for author in ADlist_APVPA:
+    #     print author
+    #
+    # print "===========Top 10 using APTPA for Xifeng Yan=================="
+    # XYlist_APTPA = dblp.find_top_10_similar_authors("Xifeng Yan", "APTPA")
+    # for author in XYlist_APTPA:
+    #     print author
+    #
+    # print "===========Top 10 using APTPA for Jamie Callan=================="
+    # JClist_APTPA = dblp.find_top_10_similar_authors("Jamie Callan", "APTPA")
+    # for author in JClist_APTPA:
+    #     print author
+    print "===========Top 10 using VPAPV for SIGMOD Conference=================="
+    JClist_VPAPV = dblp.find_top_10_similar_venues("SIGMOD Conference", "VPAPV")
+    for venue in JClist_VPAPV:
+        print venue
 
-    print "============Top 10 using APVPA for AnHai Doan================="
-    ADlist_APVPA = dblp.find_top_10_similar_authors("AnHai Doan", "APVPA")
-    for author in ADlist_APVPA:
-        print author
-
-    print "===========Top 10 using APTPA for Xifeng Yan=================="
-    XYlist_APTPA = dblp.find_top_10_similar_authors("Xifeng Yan", "APTPA")
-    for author in XYlist_APTPA:
-        print author
-
-    print "===========Top 10 using APTPA for Jamie Callan=================="      
-    JClist_APTPA = dblp.find_top_10_similar_authors("Jamie Callan", "APTPA")
-    for author in JClist_APTPA:
-        print author
-    
 if __name__ == "__main__":
     main()
         
